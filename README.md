@@ -1,0 +1,3 @@
+# CV parser for faculty database to enhance collaboration
+
+**JUST STARTED WORKING ON THIS STAY TUNED, THERE WILL BE A LOT OF CHANGES AND THE ARCHITECTURE FINALIZES**

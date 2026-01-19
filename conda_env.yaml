@@ -1,0 +1,12 @@
+name: cv_db
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - conda-forge:tesseract=5.3.1
+  - cuda-toolkit
+  - python=3.12
+  - pip
+  - pip:
+      - torch==2.5.1
+      - torchvision==0.20.1

@@ -1,0 +1,17 @@
+*.gz
+*.ipynb
+*.ipynb_checkpoints
+*.json
+*.sif
+*.idea
+*__pycache__
+notebooks
+*.egg-info
+*.egg
+*.whl
+projects
+build
+*.env
+notebooks
+*demo
+/test_docs/
