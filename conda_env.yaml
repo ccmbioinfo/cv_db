@@ -1,12 +1,19 @@
-name: cv_db
+name: cv_parser
 channels:
   - conda-forge
   - defaults
 dependencies:
-  - conda-forge:tesseract=5.3.1
-  - cuda-toolkit
   - python=3.12
   - pip
   - pip:
-      - torch==2.5.1
-      - torchvision==0.20.1
+      - --index-url https://download.pytorch.org/whl/cu128
+      - --extra-index-url https://pypi.org/simple
+      - torch
+      - pandas
+      - transformers
+      - psycopg2-binary
+      - pgvector
+      - SQLAlchemy==1.4.54
+      - doc2pdf
+      - pdfplumber
+      - outlines

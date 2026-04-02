@@ -19,6 +19,7 @@ class Database:
         self.session = sess()
         self.db_tables = self.meta.tables
 
+    # This is the same as chirpp query just paste it in
     def query(self, query):
         """
         query the database

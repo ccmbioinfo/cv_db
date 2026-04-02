@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Optional, Tuple, List, Union
+from typing import Optional, Tuple, List, Union, Type
 from datetime import date
 from dataclasses import dataclass
 
@@ -222,7 +222,7 @@ class Presentation:
     presenters: Optional[List[str]]= None
     contribution: Optional[str]= None
     is_trainee: Optional[bool]= None
-    scope: GeoScope= GeoScope
+    scope: Optional[GeoScope] = None
     presented: Optional[bool]= None
     published: Optional[bool]= None
     invited: Optional[bool]= None
@@ -238,7 +238,7 @@ class MediaAppearance:
     state_province: Optional[str]= None
     county: Optional[str]= None
     is_trainee: Optional[bool]= None
-    scope: GeoScope= GeoScope
+    scope: Optional[GeoScope] = None
 
 @dataclass
 class Presentations:
@@ -303,4 +303,96 @@ class CV:
     creatives: Optional[List[Creative]] = None
     supervisions: Optional[List[Supervision]] = None
 
+class SectionType(Enum):
+    education = "education"
+    employment = "employment"
+    award = "award"
+    publication = "publication"
+    research="research"
+    intellectual_property = "intellectual_property"
+    innovation = "innovation, contribution, exemplary_proffessional_practice"
+    presentation = "presentation"
+    media = "media_appearance"
+    supervision = "supervision"
+    funding = "research_funding"
+    creative = "creative_activity"
+    administration = "administration"
+    association = "association"
+    peer_review = "peer_review"
+    profile = "profile"
+    unknown = "unknown"
+
+@dataclass
+class SectionClassification:
+    section_type: SectionType
+    confidence: Optional[float] = None
+    rationale: Optional[str] = None
+
+@dataclass
+class EducationSection:
+    education: List[Degree]
+
+@dataclass
+class EmploymentSection:
+    employment: List[Appointment]
+
+@dataclass
+class AwardsSection:
+    awards: List[Award]
+
+@dataclass
+class PublicationsSection:
+    publications: List[Citation]
+
+@dataclass
+class PresentationsSection:
+    presentations: List[Presentation]
+
+@dataclass
+class MediaSection:
+    media: List[MediaAppearance]
+
+@dataclass
+class SupervisionsSection:
+    supervisions: List[Supervision]
+
+@dataclass
+class FundingSection:
+    funding: List[ResearchFunding]
+
+@dataclass
+class CreativeSection:
+    creatives: List[Creative]
+
+@dataclass
+class AdministrationSection:
+    administration: List[Administration]
+
+@dataclass
+class AssociationsSection:
+    associations: List[Associations]
+
+@dataclass
+class PeerReviewSection:
+    peer_reviews: List[PeerReview]
+
+@dataclass
+class ProfileSection:
+    profile: List[Profile]
+
+SECTION_TYPE_TO_SCHEMA: dict[SectionType, Type] = {
+    SectionType.education: EducationSection,
+    SectionType.employment: EmploymentSection,
+    SectionType.award: AwardsSection,
+    SectionType.publication: PublicationsSection,
+    SectionType.presentation: PresentationsSection,
+    SectionType.media: MediaSection,
+    SectionType.supervision: SupervisionsSection,
+    SectionType.funding: FundingSection,
+    SectionType.creative: CreativeSection,
+    SectionType.administration: AdministrationSection,
+    SectionType.association: AssociationsSection,
+    SectionType.peer_review: PeerReviewSection,
+    SectionType.profile: ProfileSection,
+}
 
