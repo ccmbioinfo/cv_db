@@ -65,6 +65,14 @@ class ReviewType(Enum):
     grant="grant"
     presentation="presentation"
 
+
+@dataclass
+class Contact:
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    institution: Optional[str] = None
+
 @dataclass
 class Institution:
     name:str
@@ -77,8 +85,8 @@ class Institution:
 
 @dataclass
 class Degree:
-    start:date
-    end: date
+    start:str
+    end: str
     type: DegreeType
     qualification: Optional[str] = None
     degree: Optional[str]= None
@@ -87,8 +95,8 @@ class Degree:
 
 @dataclass
 class Appointment:
-    start:date
-    end:date
+    start:str
+    end:str
     institution: Institution
     office_held:Optional[str] = None
     office_name:Optional[str] = None
@@ -98,8 +106,8 @@ class Appointment:
 
 @dataclass
 class Award:
-    start:date
-    end:date
+    start:str
+    end:str
     name:str
     awarded:bool #if not awarded assume nominated
     type: AwardType
@@ -114,16 +122,16 @@ class Award:
 
 @dataclass
 class Associations:
-    start:date
-    end:date
+    start:str
+    end:str
     institution:Institution
     membership_num:Optional[str]=None
     role:Optional[str]=None
 
 @dataclass
 class Administration:
-    start:date
-    end:date
+    start:str
+    end:str
     role:str
     is_education:Optional[bool]=None
     scope:Optional[GeoScope]=None
@@ -134,8 +142,8 @@ class Administration:
 
 @dataclass
 class PeerReview:
-    start:date
-    end:date
+    start:str
+    end:str
     institution: Institution
     type: ReviewType
     role:Optional[str]=None
@@ -144,8 +152,8 @@ class PeerReview:
 
 @dataclass
 class Research:
-    start:date
-    end:date
+    start:str
+    end:str
     institution:Institution
     supervisors:Optional[list[str]] = None
     collaborators:Optional[list[str]] = None
@@ -164,8 +172,8 @@ class Profile:
 
 @dataclass
 class ResearchFunding:
-    start:date
-    end:date
+    start:str
+    end:str
     role:str
     name:str
     source: str
@@ -203,7 +211,7 @@ class Citation:
 @dataclass
 class IP:
     title:str
-    filing_date:date
+    filing_date:str
     number:str
     type: IPType
     state_province:Optional[str]= None
@@ -213,7 +221,7 @@ class IP:
 
 @dataclass
 class Presentation:
-    date:date
+    date:str
     title:str
     organizer: Optional[str]= None
     city: Optional[str]= None
@@ -230,7 +238,7 @@ class Presentation:
 @dataclass
 class MediaAppearance:
     role: str
-    date: date
+    date: str
     topic: Optional[str]= None
     program: Optional[str]= None
     network: Optional[str]= None
@@ -246,8 +254,8 @@ class Presentations:
 
 @dataclass
 class Supervision:
-    start: date
-    end: date
+    start: str
+    end: str
     role: str
     name: str
     position: Optional[str]= None
@@ -262,8 +270,8 @@ class Supervision:
 
 @dataclass
 class Creative:
-    start: date
-    end: date
+    start: str
+    end: str
     title: Optional[str]= None
     description: Optional[str]= None
     impact: Optional[str]= None
@@ -271,8 +279,8 @@ class Creative:
 
 @dataclass
 class Course:
-    start: date
-    end: date
+    start: str
+    end: str
     title: Optional[str]= None
     audience: Optional[SupervisionScope]= None
     institution: Optional[Institution]= None
@@ -324,9 +332,7 @@ class SectionType(Enum):
 
 @dataclass
 class SectionClassification:
-    section_type: SectionType
-    confidence: Optional[float] = None
-    rationale: Optional[str] = None
+    section_type: str
 
 @dataclass
 class EducationSection:
@@ -380,19 +386,20 @@ class PeerReviewSection:
 class ProfileSection:
     profile: List[Profile]
 
-SECTION_TYPE_TO_SCHEMA: dict[SectionType, Type] = {
-    SectionType.education: EducationSection,
-    SectionType.employment: EmploymentSection,
-    SectionType.award: AwardsSection,
-    SectionType.publication: PublicationsSection,
-    SectionType.presentation: PresentationsSection,
-    SectionType.media: MediaSection,
-    SectionType.supervision: SupervisionsSection,
-    SectionType.funding: FundingSection,
-    SectionType.creative: CreativeSection,
-    SectionType.administration: AdministrationSection,
-    SectionType.association: AssociationsSection,
-    SectionType.peer_review: PeerReviewSection,
-    SectionType.profile: ProfileSection,
+SECTION_TYPE_TO_SCHEMA: dict[str, Type] = {
+    "contact_information": Contact,
+    "education": EducationSection,
+    "employment": EmploymentSection,
+    "award": AwardsSection,
+    "publication": PublicationsSection,
+    "presentation": PresentationsSection,
+    "media": MediaSection,
+    "supervision": SupervisionsSection,
+    "funding": FundingSection,
+    "creative": CreativeSection,
+    "administration": AdministrationSection,
+    "association": AssociationsSection,
+    "peer_review": PeerReviewSection,
+    "profile": ProfileSection,
 }
 

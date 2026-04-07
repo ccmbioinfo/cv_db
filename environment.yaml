@@ -17,3 +17,5 @@ dependencies:
       - doc2pdf
       - pdfplumber
       - outlines
+      - accelerate
+      - bitsandbytes

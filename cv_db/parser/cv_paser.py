@@ -1,14 +1,24 @@
 import warnings
 import os
 from functools import cached_property, lru_cache
+import json
 
 import outlines
 import pdfplumber
+from accelerate.test_utils.examples import clean_lines
 from doc2pdf import convert
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 from cv_db.parser.cv_structure import *
+
+def normalize_string(x):
+    if not isinstance(x, str):
+        return x
+    if len(x) >= 2 and x[0] == x[-1] and x[0] in ("'", '"'):
+        return x[1:-1]
+    return x
+
 
 class SectionExtractor:
     def __init__(self, model_name, tokenizer_kwargs=None, model_kwargs=None, quant_kwargs=None):
@@ -31,48 +41,102 @@ class SectionExtractor:
 
         self.model=outlines.from_transformers(llm, tokenizer)
 
-    def identify_section(self, chunk):
+    def identify_section(self, header, chunk):
         prompt = f"""
-        You are classifying a section of an academic CV.
+You are classifying sections of an academic CV.
 
-        Decide what kind of CV content this is, based on its substance.
-        Only choose ONE section type.
+Use the HEADER as the primary signal.
 
-        If the content does not clearly match a category, choose "unknown".
+Definitions:
+- education: degrees, training, academic qualifications
+- employment: positions and appointments
+- award: honors and distinctions
+- publication: journal articles, books
+- presentation: talks and posters
+- research: research projects
+- funding: grants
+- supervision: mentoring students
+- administration: committees, leadership
+- association: memberships
+- peer_review: reviewing journals/grants
+- intellectual_property: patents
+- creative: creative work
+- media: interviews
+- contact_information: phone, email, address
+- profile: ONLY narrative personal statements
 
-        CV section text:
-        ----------------
-        {chunk}
+Rules:
+- If HEADER is clear → ignore content
+- If list-like or contains dates → NOT profile
+- Profile must be narrative text only
+- Prefer specific category over profile
+- If unsure → unknown
+            
+            HEADER (most important):
+            {header}
+            ---------
+            CONTENT (not as important, use if header is unclear):
+            {chunk}
         """
 
-        classify_section = self.model(
+        section_class = self.model(
             prompt,
             SectionClassification
         )
 
-        return classify_section(prompt)
+        return section_class
 
-    def extract_section_info(self, chunk, section_type):
+    def extract_section_info(self, chunk, header, section_type):
+
         schema = SECTION_TYPE_TO_SCHEMA.get(section_type)
         if schema is None:
             return None
 
-        return self.model(
-            f"""
-        Extract all relevant information from the following CV section.
-        Return structured data only.
 
-        CV section:
-        -----------
+        prompt = f"""
+        Extract structured data from this CV section.
+
+        Rules:
+        - Do NOT fabricate information
+        - Use null if missing
+        - Dates must remain as strings (e.g., "Jul 2015", "2015-Present")
+        - Do NOT convert to full dates
+        - Do NOT guess fields
+        - Preserve multiple entries
+
+        SECTION TYPE: {section_type}
+
+        HEADER:
+        {header}
+
+        CONTENT:
         {chunk}
-        """,
-            schema,
-        )
+        """
+
+        try:
+            results = self.model(
+                prompt,
+                schema,
+                max_new_tokens=5000
+            )
+            return results
+        except Exception as e:
+            print(e)
 
 @dataclass
 class ParsedCV:
-    @lru_cache(maxsize=None, typed=False)
-    def file(self, path):
+    file: str
+    raw_lines: Optional[List] = None
+    fonts: Optional[List] = None
+    cleaned_lines: Optional[List] = None
+    sections: Optional[dict] = None
+    extracted_info: Optional[List] = None
+
+class CVParser:
+    def __init__(self, extractor: SectionExtractor):
+        self.extractor=extractor
+
+    def _read_file(self, path):
         if not os.path.exists(path):
             raise FileNotFoundError(f"File not found: {path}")
 
@@ -82,12 +146,9 @@ class ParsedCV:
             warnings.warn("Converting DOCX to PDF. This may take a while.")
             new_path=path.replace("docx", "pdf")
             convert(path, new_path)
-            return new_path
         else:
             raise NotImplementedError("Unsupported file format. Only PDF and DOCX are supported.")
 
-    @cached_property
-    def raw_lines(self):
         structured_lines = []
         with pdfplumber.open(self.file) as pdf:
             for page in pdf.pages:
@@ -121,9 +182,8 @@ class ParsedCV:
                     })
         return structured_lines
 
-    @cached_property
-    def fonts(self):
-        font_sizes = [item["size"] for item in self.raw_lines]
+    def _get_fonts(self, raw_lines):
+        font_sizes = [item["size"] for item in raw_lines]
         to_rem = [min(font_sizes),
                   max(font_sizes)]  # min contains the header and the footer and the max just says Curriculum Vitae
         font_sizes = list(set([item for item in font_sizes if item not in to_rem]))
@@ -134,14 +194,11 @@ class ParsedCV:
                       font_sizes[3]: "header"}
         return font_sizes
 
-    @cached_property
-    def cleaned_lines(self):
-        return [item for item in self.raw_lines if item["size"] in list(self.fonts.keys())]
+    def _get_cleaned_lines(self, raw_lines, fonts):
+        return [item for item in raw_lines if item["size"] in list(fonts.keys())]
 
-    @cached_property
-    def sections(self):
-        structured_data = {}
-
+    def _get_sections(self, cleaned_lines, fonts):
+        sections = {}
         # State tracking
         current_headers = {
             "header": None,
@@ -177,24 +234,39 @@ class ParsedCV:
                 full_key = "|".join([part for part in key_parts if part is not None])
 
                 # Initialize list if key doesn't exist, then append text
-                if full_key not in structured_data:
-                    structured_data[full_key] = []
-                structured_data[full_key].append(content)
+                if full_key not in sections:
+                    sections[full_key] = []
+                sections[full_key].append(content)
 
-        return structured_data
+        return sections
 
-    parsed_sections: dict = None
-
-    @lru_cache(maxsize=None)
-    def extracted_sections(self, extractor:SectionExtractor):
-        extracted_sections=[]
+    def _extract_info(self, sections):
+        extracted_sections = []
         for section_header, section_text in self.sections.items():
-            section_content="\n".join([section_header, section_text])
-            section_type=extractor.identify_section(section_content)
-            section_info=extractor.extract_section_info(section_content, section_type)
+            section_text = "\n".join(section_text)
+            section_type = self.extractor.identify_section(section_header, section_text)
+            section_type = json.loads(section_type)["section_type"]
+            section_info = self.extractor.extract_section_info(section_text, section_header, section_type)
             extracted_sections.append(section_info)
 
+        return extracted_sections
 
 
+    def process(self, file_path, extract=True):
+        raw_lines=self.read(file_path)
+        fonts=self._get_fonts(raw_lines)
+        clean_lines=self._get_cleaned_lines(raw_lines, fonts)
+        sections=self._get_sections(clean_lines, fonts)
+        if extract:
+            info=self._extract_info(sections)
+        else:
+            info=None
 
+        cv = ParsedCV(file=file_path,
+                      raw_lines=raw_lines,
+                      fonts=fonts,
+                      cleaned_lines=clean_lines,
+                      sections=sections,
+                      extracted_info=info)
+        return cv
 
