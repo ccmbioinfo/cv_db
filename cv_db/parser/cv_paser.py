@@ -1,11 +1,9 @@
 import warnings
 import os
-from functools import cached_property, lru_cache
 import json
 
 import outlines
 import pdfplumber
-from accelerate.test_utils.examples import clean_lines
 from doc2pdf import convert
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
@@ -83,11 +81,13 @@ Rules:
             prompt,
             SectionClassification
         )
+        if section_class is None:
+            print(header)
 
         return section_class
 
-    def extract_section_info(self, chunk, header, section_type):
-
+    def extract_section_info(self, chunk, section_type):
+        section_length=len(" ".join(chunk).split(" "))
         schema = SECTION_TYPE_TO_SCHEMA.get(section_type)
         if schema is None:
             return None
@@ -104,11 +104,6 @@ Rules:
         - Do NOT guess fields
         - Preserve multiple entries
 
-        SECTION TYPE: {section_type}
-
-        HEADER:
-        {header}
-
         CONTENT:
         {chunk}
         """
@@ -117,7 +112,7 @@ Rules:
             results = self.model(
                 prompt,
                 schema,
-                max_new_tokens=5000
+                max_new_tokens=section_length*5
             )
             return results
         except Exception as e:
@@ -141,7 +136,7 @@ class CVParser:
             raise FileNotFoundError(f"File not found: {path}")
 
         if path.endswith(".pdf"):
-            return path
+            new_path=path
         elif path.endswith(".docx"):
             warnings.warn("Converting DOCX to PDF. This may take a while.")
             new_path=path.replace("docx", "pdf")
@@ -150,11 +145,11 @@ class CVParser:
             raise NotImplementedError("Unsupported file format. Only PDF and DOCX are supported.")
 
         structured_lines = []
-        with pdfplumber.open(self.file) as pdf:
+        with pdfplumber.open(new_path) as pdf:
             for page in pdf.pages:
                 words = page.extract_words(extra_attrs=["fontname", "size", "page_number", "top"])
                 if not words:
-                    continue
+                    lines.append("\n")
 
                 lines = []
                 current_line = [words[0]]
@@ -187,11 +182,23 @@ class CVParser:
         to_rem = [min(font_sizes),
                   max(font_sizes)]  # min contains the header and the footer and the max just says Curriculum Vitae
         font_sizes = list(set([item for item in font_sizes if item not in to_rem]))
-        font_sizes.sort()
-        font_sizes = {font_sizes[0]: "text",
-                      font_sizes[1]: "sub_header2",
-                      font_sizes[2]: "sub_header1",
-                      font_sizes[3]: "header"}
+        size_dict = {}
+        for size in font_sizes:
+            size_dict[size]=0
+
+        for line in raw_lines:
+            if line["size"] not in font_sizes:
+                continue
+            else:
+                size_dict[line["size"]] = size_dict[line["size"]] + 1
+                
+        header_val=max(size_dict)
+        text_val=max(size_dict, key=size_dict.get)
+        subheaders=[k for k in size_dict if k != header_val and k!=text_val]
+        font_sizes = {text_val: "text",
+                      header_val: "header"}
+        for item in subheaders:
+            font_sizes[item]="sub_header"
         return font_sizes
 
     def _get_cleaned_lines(self, raw_lines, fonts):
@@ -202,32 +209,25 @@ class CVParser:
         # State tracking
         current_headers = {
             "header": None,
-            "sub_header1": None,
-            "sub_header2": None
+            "sub_header": None,
         }
 
-        for line in self.cleaned_lines:
-            label = self.fonts[line["size"]]  # Assuming "size" contains the classification label
+        for line in cleaned_lines:
+            label = fonts[line["size"]]  # Assuming "size" contains the classification label
             content = line["text"].strip()
 
             if label == "header":
                 current_headers["header"] = content
-                current_headers["sub_header1"] = None
-                current_headers["sub_header2"] = None
+                current_headers["sub_header"] = None
 
-            elif label == "sub_header1":
-                current_headers["sub_header1"] = content
-                current_headers["sub_header2"] = None
-
-            elif label == "sub_header2":
-                current_headers["sub_header2"] = content
+            elif label == "sub_header":
+                current_headers["sub_header"] = content
 
             elif label == "text":
                 # Build the key dynamically based on what headers are currently active
                 key_parts = [
                     current_headers["header"],
-                    current_headers["sub_header1"],
-                    current_headers["sub_header2"]
+                    current_headers["sub_header"]
                 ]
 
                 # Filter out None values and join
@@ -253,7 +253,7 @@ class CVParser:
 
 
     def process(self, file_path, extract=True):
-        raw_lines=self.read(file_path)
+        raw_lines=self._read_file(file_path)
         fonts=self._get_fonts(raw_lines)
         clean_lines=self._get_cleaned_lines(raw_lines, fonts)
         sections=self._get_sections(clean_lines, fonts)
