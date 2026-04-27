@@ -316,7 +316,6 @@ class SectionType(Enum):
     employment = "employment"
     award = "award"
     publication = "publication"
-    research="research"
     intellectual_property = "intellectual_property"
     innovation = "innovation, contribution, exemplary_proffessional_practice"
     presentation = "presentation"

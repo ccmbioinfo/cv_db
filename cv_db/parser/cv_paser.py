@@ -7,6 +7,7 @@ import pdfplumber
 from doc2pdf import convert
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from sentence_transformers import SentenceTransformer
 
 from cv_db.parser.cv_structure import *
 
@@ -17,73 +18,45 @@ def normalize_string(x):
         return x[1:-1]
     return x
 
+model_name="mistralai/Mistral-7B-Instruct-v0.3"
+#quant_config=BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
+#                                bnb_4bit_compute_dtype=torch.float16,
+#                                bnb_4bit_use_double_quant=True)
+#llm=AutoModelForCausalLM.from_pretrained(model_name, quantization_config=quant_config, device_map="auto")
+#tokenizer = AutoTokenizer.from_pretrained(model_name)
+#outlines_model=outlines.from_transformers(llm, tokenizer)
+
+sentence_transformer_model = SentenceTransformer("Qwen/Qwen3-Embedding-4B")
+
 
 class SectionExtractor:
-    def __init__(self, model_name, tokenizer_kwargs=None, model_kwargs=None, quant_kwargs=None):
-        if tokenizer_kwargs is not None:
-            tokenizer=AutoTokenizer.from_pretrained(model_name, **tokenizer_kwargs)
-        else:
-            tokenizer = AutoTokenizer.from_pretrained(model_name)
+    def __init__(self, outlines_model=model_name, sentence_transformer_model=sentence_transformer_model):
+        self.outlines=outlines_model
+        self.sentence_transformer=sentence_transformer_model
 
-        if quant_kwargs is not None:
-            quant_config=BitsAndBytesConfig(**quant_kwargs)
-            if model_kwargs is not None:
-                llm=AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs, quantization_config=quant_config)
-            else:
-                llm = AutoModelForCausalLM.from_pretrained(model_name)
-        else:
-            if model_kwargs is not None:
-                llm=AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
-            else:
-                llm = AutoModelForCausalLM.from_pretrained(model_name)
-
-        self.model=outlines.from_transformers(llm, tokenizer)
-
-    def identify_section(self, header, chunk):
-        prompt = f"""
-You are classifying sections of an academic CV.
-
-Use the HEADER as the primary signal.
-
-Definitions:
-- education: degrees, training, academic qualifications
-- employment: positions and appointments
-- award: honors and distinctions
-- publication: journal articles, books
-- presentation: talks and posters
-- research: research projects
-- funding: grants
-- supervision: mentoring students
-- administration: committees, leadership
-- association: memberships
-- peer_review: reviewing journals/grants
-- intellectual_property: patents
-- creative: creative work
-- media: interviews
-- contact_information: phone, email, address
-- profile: ONLY narrative personal statements
-
-Rules:
-- If HEADER is clear → ignore content
-- If list-like or contains dates → NOT profile
-- Profile must be narrative text only
-- Prefer specific category over profile
-- If unsure → unknown
-            
-            HEADER (most important):
-            {header}
-            ---------
-            CONTENT (not as important, use if header is unclear):
-            {chunk}
-        """
-
-        section_class = self.model(
-            prompt,
-            SectionClassification
-        )
-        if section_class is None:
-            print(header)
-
+    def identify_section(self, headers):
+        sections=[
+            ("education", "degrees, training, academic qualifications, certifications"),
+            ("employment", "positions and appointments, current and past"),
+            ("award", "honors and distinctions but not certifications for research, leadership or teaching"),
+            ("publication", "journal articles, letters, short articles, books, book chapters peer reviewed and not peer reviewed"),
+            ("presentation", "invited or applied talks, posters and abstracts"),
+            ("funding", "grants, peer reviewed and non peer reviewed"),
+            ("supervision", "mentoring students, graduate, undergraduate and/or medical students"),
+            ("administration", "committees, leadership administrative activities, not including associations but in organizational positions"),
+            ("association", "memberships to professional associations past and present"),
+            ("peer_review", "peer reviewing activities journals/grants, not items that get peer reviewed by others"),
+            ("intellectual_property", "patents and trademarks"),
+            ("creative", "creative work such as professional innovations or contributions to professional practices"),
+            ("media", "interviews in news, radio, press or other media outlets"),
+            ("contact_information", "phone, email, office address"),
+            ("profile", "ONLY narrative personal statements that describes philosophy, values and vision in research teaching and professional practice")
+        ]
+        query_embeddings = self.sentence_transformer.encode(headers, prompt_name="query")
+        document_embeddings = self.sentence_transformer.encode([item[1] for item in sections])
+        similarity = self.sentence_transformer.similarity(query_embeddings, document_embeddings)
+        items=torch.argmax(similarity, dim=1).tolist()
+        section_class=[sections[item][0] for item in items]
         return section_class
 
     def extract_section_info(self, chunk, section_type):
@@ -136,49 +109,79 @@ class CVParser:
             raise FileNotFoundError(f"File not found: {path}")
 
         if path.endswith(".pdf"):
-            new_path=path
+            new_path = path
         elif path.endswith(".docx"):
             warnings.warn("Converting DOCX to PDF. This may take a while.")
-            new_path=path.replace("docx", "pdf")
+            new_path = path.replace(".docx", ".pdf")
             convert(path, new_path)
         else:
             raise NotImplementedError("Unsupported file format. Only PDF and DOCX are supported.")
 
         structured_lines = []
+
+        LINE_MERGE_TOL = 3  # same visual line
+        BLANK_LINE_GAP = 12  # vertical gap => blank line
+
         with pdfplumber.open(new_path) as pdf:
             for page in pdf.pages:
-                words = page.extract_words(extra_attrs=["fontname", "size", "page_number", "top"])
+                words = page.extract_words(
+                    extra_attrs=["fontname", "size", "page_number", "top"]
+                )
+
                 if not words:
-                    lines.append("\n")
+                    structured_lines.append({
+                        "text": "",
+                        "size": None,
+                        "is_bold": False,
+                        "starting_page": page.page_number,
+                    })
+                    continue
 
                 lines = []
                 current_line = [words[0]]
+
                 for w in words[1:]:
-                    if abs(w['top'] - current_line[-1]['top']) < 3:
+                    prev = current_line[-1]
+
+                    if abs(w["top"] - prev["top"]) < LINE_MERGE_TOL:
                         current_line.append(w)
                     else:
                         lines.append(current_line)
+
+                        # infer blank line from vertical gap
+                        if (w["top"] - prev["top"]) > BLANK_LINE_GAP:
+                            lines.append(None)  # represents blank line
+
                         current_line = [w]
+
                 lines.append(current_line)
 
                 for line in lines:
-                    text = " ".join([w['text'] for w in line])
-                    # Determine styling: UofT headers are typically larger or Bold
-                    avg_size = sum([w['size'] for w in line]) / len(line)
-                    is_bold = any("bold" in w['fontname'].lower() for w in line)
+                    if line is None:
+                        structured_lines.append({
+                            "text": "",
+                            "size": None,
+                            "is_bold": False,
+                            "starting_page": page.page_number,
+                        })
+                        continue
+
+                    text = " ".join(w["text"] for w in line)
+                    avg_size = sum(w["size"] for w in line) / len(line)
+                    is_bold = any("bold" in w["fontname"].lower() for w in line)
                     page_number = min(w["page_number"] for w in line)
+
                     structured_lines.append({
                         "text": text,
                         "size": round(avg_size),
                         "is_bold": is_bold,
                         "starting_page": page_number,
-                        # "pos": line["top"]
-
                     })
+
         return structured_lines
 
     def _get_fonts(self, raw_lines):
-        font_sizes = [item["size"] for item in raw_lines]
+        font_sizes = [item["size"] for item in raw_lines if item["size"] is not None]
         to_rem = [min(font_sizes),
                   max(font_sizes)]  # min contains the header and the footer and the max just says Curriculum Vitae
         font_sizes = list(set([item for item in font_sizes if item not in to_rem]))
