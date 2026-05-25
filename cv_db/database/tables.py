@@ -9,7 +9,7 @@ import uuid
 
 Base = declarative_base()
 
-# this is what's on the CV header
+# this is what's on the CV header it's just contact information
 class Person(Base):
     __tablename__ = "person"
     person_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -21,8 +21,9 @@ class Person(Base):
     email = Column(String)
     phone= Column(String)
     office_address = Column(String)
+    updated_at=Column(Date)
 
-
+#this is the whole cv, stored as text and tsvector for keyword search
 class CV(Base):
     __tablename__ = "cv"
     cv_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -33,33 +34,33 @@ class CV(Base):
     cv_tsv = Column(TSVECTOR, Computed("to_tsvector('english', cv_text)", persisted=True))
     __table_args__ = ( Index('ix_cv_tsv', cv_tsv, postgresql_using='gin'),)
 
+
 class Education(Base):
     __tablename__ = "education"
     education_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     person_id = Column(UUID(as_uuid=True), ForeignKey("person.person_id"))
-    category = Column(String)
     start_date = Column(Date)
-    end_date = Column(Date)
-    qualification = Column(String)
-    specialization = Column(String)
+    end_date=Column(Date, nullable=True)
+    type = Column(String)
+    department=Column(String, nullable=True)
+    division=Column(String, nullable=True)
     institution = Column(String)
     city = Column(String)
     province = Column(String)
     country = Column(String)
     supervisors = Column(ARRAY(String))
-    description = Column(Text)
+    description = Column(Text) #sometimes there are descriptions like thesis work etc.
 
-class Appointment(Base):
-    __tablename__ = "appointment"
+class Employment(Base):
+    __tablename__ = "employment"
     appointment_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     person_id = Column(UUID(as_uuid=True), ForeignKey("person.person_id"))
     start_date = Column(Date)
     end_date = Column(Date)
-    office_type = Column(String)
+    office_held = Column(String)
     office_name = Column(String)
     division = Column(String)
     department = Column(String)
-    faculty = Column(String)
     institution = Column(String)
     city = Column(String)
     province = Column(String)
@@ -67,82 +68,72 @@ class Appointment(Base):
     appointment_type = Column(String)
     description = Column(Text) #embed this?
 
-
 class Award(Base):
     __tablename__ = "award"
     award_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     person_id = Column(UUID(as_uuid=True), ForeignKey("person.person_id"))
-    category = Column(String)
-    geographic_scope = Column(String)
-    nomination_status = Column(String)
-    title = Column(String)
-    role = Column(String)
-    organization = Column(String)
-    specialty = Column(String)
-    description = Column(Text) #embed this?
-    total_amount = Column(Numeric)
-    currency = Column(String)
-    start_date = Column(Date)
-    end_date = Column(Date)
-
-class GrantFunding(Base):
-    __tablename__ = "grant_funding"
-    grant_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    person_id = Column(UUID(as_uuid=True), ForeignKey("person.person_id"))
-    peer_reviewed = Column(Boolean)
-    status = Column(String)
-    role = Column(String)
-    title = Column(String)
-    funding_source = Column(String)
-    program = Column(String)
-    grant_number = Column(String)
-    principal_investigator = Column(String)
-    collaborators = Column(ARRAY(String))
-    amount = Column(Numeric)
-    currency = Column(String)
-    funding_type = Column(String)
+    start_date=Column(Date)
+    end_date=Column(Date)
+    awarded=Column(Boolean)
+    type=Column(String)
+    scope=Column(String)
+    amount=Column(Numeric)
+    currency=Column(String)
+    role=Column(String)
+    institution=Column(String)
     description = Column(Text)
-    start_date = Column(Date)
-    end_date = Column(Date)
+
 
 #search openalex for the paper?
 class Publication(Base):
     __tablename__ = "publication"
     publication_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     person_id = Column(UUID(as_uuid=True), ForeignKey("person.person_id"))
-    pub_type = Column(String)
-    peer_reviewed = Column(Boolean)
-    status = Column(String)
-    title = Column(Text)
-    journal = Column(String)
-    publisher = Column(String)
-    volume = Column(String)
-    issue = Column(String)
-    pages = Column(String)
-    publication_date = Column(Date)
-    url = Column(String)
-    impact_factor = Column(Numeric)
-    authors = Column(ARRAY(Text))
-    trainee = Column(Boolean)
-    role = Column(String)
-    citation = Column(String)
+    title=Column(String)
+    date=Column(Date)
+    venue=Column(String)
+    issue=Column(String)
+    authors=Column(String) # This would be a nightmare to normalize, we can think of ways to search for the publication if published to get structured info
+    published=Column(Boolean)
+    submitter=Column(Boolean)
+    reviewed=Column(Boolean)
+    type=Column(String)
+    trainee=Column(String)
+    role=Column(String)
 
 class Presentation(Base):
     __tablename__ = "presentation"
     presentation_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     person_id = Column(UUID(as_uuid=True), ForeignKey("person.person_id"))
-    scope = Column(String)
-    type = Column(String)
-    role = Column(String)
     title = Column(String)
-    event = Column(String)
+    date = Column(Date)
+    organizer = Column(String)
     city = Column(String)
     province = Column(String)
     country = Column(String)
-    date = Column(Date)
-    presenters = Column(ARRAY(String))
-    abstract = Column(Text)
-    url = Column(String)
+    presenters = Column(String) #same as above and now we do not have the ability to search for most of these things unless we get an agent but that also
+    #is not that reliable
+    scope = Column(String)
+    type = Column(String)
+    presented = Column(Boolean)
+
+class Funding(Base):
+    __tablename__ = "funding"
+    grant_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    person_id = Column(UUID(as_uuid=True), ForeignKey("person.person_id"))
+    start_date=Column(Date)
+    end_date=Column(Date)
+    role=Column(String)
+    source=Column(String)
+    program=Column(String)
+    grant_number=Column(String) #it's not always a number
+    collaborators=Column(String) #same as authors
+    amount=Column(Numeric)
+    currency=Column(String)
+    declined=Column(Boolean)
+    peer_reviewed=Column(Boolean)
+    type=Column(String)
+    description=Column(Text)
 
 
 class Teaching(Base):
@@ -151,116 +142,115 @@ class Teaching(Base):
     person_id = Column(UUID(as_uuid=True), ForeignKey("person.person_id"))
     start_date = Column(Date)
     end_date = Column(Date)
-    title = Column(String)
-    primary_audience = Column(String)
-    faculty = Column(String)
-    department = Column(String)
-    division = Column(String)
-    institution = Column(String)
-    description = Column(Text)
-    impact = Column(Text)
+    audience=Column(String)
+    faculty=Column(String)
+    department=Column(String)
+    division=Column(String)
+    institution=Column(String)
+    description=Column(Text)
+    impact=Column(String)
 
 class Supervision(Base):
     __tablename__ = "supervision"
     supervision_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     person_id = Column(UUID(as_uuid=True), ForeignKey("person.person_id"))
-    supervisory_role = Column(Text)
-    audience = Column(String)
-    student_name = Column(String)
-    graduate_unit = Column(String)
-    institution = Column(String)
-    project_title = Column(String)
-    supervisors = Column(ARRAY(String))
-    collaborators = Column(ARRAY(String))
-    completed_year = Column(Integer)
-    start_date = Column(Date)
-    end_date = Column(Date)
-
-#creative professional activity
-class CPAActivity(Base):
-    __tablename__ = "cpa_activity"
-    cpa_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    person_id = Column(UUID(as_uuid=True), ForeignKey("person.person_id"))
-    category = Column(String)
-    title = Column(String)
-    description = Column(Text)
-    impact = Column(Text)
-    start_date = Column(Date)
-    end_date = Column(Date)
-
-class Membership(Base):
-    __tablename__ = "membership"
-    membership_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    person_id = Column(UUID(as_uuid=True), ForeignKey("person.person_id"))
-    start_date = Column(Date)
-    end_date = Column(Date)
-    role = Column(String)
-    institution = Column(String)
-    membership_number = Column(String)
-
-class AdministrativeService(Base):
-    __tablename__ = "administrative_service"
-    service_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    person_id = Column(UUID(as_uuid=True), ForeignKey("person.person_id"))
-    geographic_scope = Column(String)
-    organization = Column(String)
-    committee_name = Column(String)
-    role = Column(String)
-    faculty = Column(String)
-    department = Column(String)
-    division = Column(String)
-    street = Column(String)
-    city = Column(String)
-    province = Column(String)
-    country = Column(String)
-    primary_audience = Column(String)
-    educational_administration = Column(Boolean)
-    description = Column(Text)
-    start_date = Column(Date)
-    end_date = Column(Date)
+    start=Column(Date)
+    end=Column(Date)
+    audience=Column(String)
+    name=Column(String)
+    primary=Column(Boolean)
+    role=Column(String)
+    description=Column(Text)
 
 
-class EditorialRole(Base):
-    __tablename__ = "editorial_role"
-    editorial_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    person_id = Column(UUID(as_uuid=True), ForeignKey("person.person_id"))
-    start_date = Column(Date)
-    end_date = Column(Date)
-    role = Column(String)
-    title = Column(String)
-    number_of_reviews = Column(Integer)
-
-
-class JournalReview(Base):
-    __tablename__ = "journal_review"
+class Review(Base):
+    __tablename__ = "review"
     review_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     person_id = Column(UUID(as_uuid=True), ForeignKey("person.person_id"))
     start_date = Column(Date)
     end_date = Column(Date)
+    organization=Column(String)
     role = Column(String)
-    journal_title = Column(String)
+    type = Column(String)
     number_of_reviews = Column(Integer)
 
-
-class GrantReview(Base):
-    __tablename__ = "grant_review"
-    grant_review_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+class Association(Base):
+    __tablename__ = "association"
+    association_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     person_id = Column(UUID(as_uuid=True), ForeignKey("person.person_id"))
     start_date = Column(Date)
     end_date = Column(Date)
-    role = Column(String)
-    institution = Column(String)
-    funding_organization = Column(String)
-    number_of_reviews = Column(Integer)
+    role=Column(String)
+    member_number=Column(String) #might include letters etc.
 
 
-class PresentationReview(Base):
-    __tablename__ = "presentation_review"
-    presentation_review_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+class Administration(Base):
+    __tablename__ = "administration"
+    service_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     person_id = Column(UUID(as_uuid=True), ForeignKey("person.person_id"))
     start_date = Column(Date)
     end_date = Column(Date)
-    role = Column(String)
-    conference_title = Column(String)
-    organization = Column(String)
-    number_of_reviews = Column(Integer)
+    role=Column(String)
+    committee_name=Column(String)
+    organization=Column(String)
+    scope=Column(String)
+
+class IntellectualProperty(Base):
+    __tablename__ = "intellectual_property"
+    intellectual_property_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    person_id = Column(UUID(as_uuid=True), ForeignKey("person.person_id"))
+    date=Column(Date)
+    no=Column(String)
+    state=Column(String)
+    country=Column(String)
+    joint_holders=Column(String)
+    type=Column(String)
+
+
+class Creative(Base):
+    __tablename__ = "creative"
+    creative_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    person_id = Column(UUID(as_uuid=True), ForeignKey("person.person_id"))
+    start_date = Column(Date)
+    end_date = Column(Date)
+    title=Column(String)
+    description = Column(Text)
+    impact=Column(String)
+    type=Column(String)
+
+class Media(Base):
+    __tablename__ = "media"
+    media_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    person_id = Column(UUID(as_uuid=True), ForeignKey("person.person_id"))
+    date=Column(Date)
+    role=Column(String)
+    topic=Column(String)
+    program=Column(String)
+    network=Column(String)
+    city=Column(String)
+    state=Column(String)
+    country=Column(String)
+    scope=Column(String)
+
+#this one contains free text items so creating a ts vector for keyword searches
+class Profile:
+    __tablename__ = "profile"
+    profile_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    person_id = Column(UUID(as_uuid=True), ForeignKey("person.person_id"))
+    research_statement=Column(Text)
+    teaching_philosophy=Column(Text)
+    creative=Column(Text)
+    other=Column(Text)
+    research_tsv = Column(TSVECTOR, Computed("to_tsvector('english', research_statement)", persisted=True))
+    teaching_tsv = Column(TSVECTOR, Computed("to_tsvector('english', teaching_philosophy)", persisted=True))
+    creative_tsv = Column(TSVECTOR, Computed("to_tsvector('english', creative)", persisted=True))
+    other_tsv = Column(TSVECTOR, Computed("to_tsvector('english', other)", persisted=True))
+    __table_args__ = (Index('ix_research_tsv', research_tsv, postgresql_using='gin'),
+                      Index('ix_teaching_tsv', teaching_tsv, postgresql_using='gin'),
+                      Index('ix_creative_tsv', creative_tsv, postgresql_using='gin'),
+                      Index('ix_other_tsv', other_tsv, postgresql_using='gin'),)
+
+
+
+#TODO for profile we might want to include embeddings, similarly for paper, presentation and some other classes if we want to search
+# for people who are working on similar things
