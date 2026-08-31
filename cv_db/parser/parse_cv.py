@@ -1,291 +1,365 @@
-from dataclasses import dataclass
-from typing import Optional
-
-import warnings
 import os
-import json
+import logging
+from typing import Optional
+from dataclasses import dataclass, field
 
-import pdfplumber
-import torch
+import numpy as np
+from paddleocr import PPStructureV3, PaddleOCRVL
 
-from cv_db.parser.prompts import *
+from cv_db.parser.models import *
 
-@dataclass
-class CVSection:
-    section_type: str
-    section_content: str
-    parsed_content:dict
+logger = logging.getLogger(__name__)
 
-@dataclass
-class CV:
-    file:str
-    raw_lines:list[str]
-    cleaned_lines:list[str]
-    fonts:dict
-    sections: list[CVSection]
+class SectionExtractor:
+    def __init__(self, llm, sampling_params):
+        self.llm = llm
+        self.sampling_params = sampling_params
 
-    @classmethod
-    def from_db(cls, id):
-        """
-        creates a CV object from a database id
-        """
-        pass
+    def _get_model(self, section_class):
+        model=EXTRACTION_MODELS[section_class]
+        return model
 
-    def to_db(self):
-        """
-        upload the cv to the database assuming all the sections are correct, they would need to be checked and coerced
-        """
-        pass
+    def _extract(self, section_class, section):
+        model = self._get_model(section_class)
+        prompt = model.get_prompt(section.header, section.text)
+        conversation = [{"role": "user", "content": prompt}]
+        output = self.llm.chat(
+            [conversation],
+            sampling_params=self.sampling_params,
+            use_tqdm=False,
+        )
+        raw = output[0].outputs[0].text
+        try:
+            return model.model_validate_json(raw)
+        except ValueError:
+            logger.warning(
+                "Failed to parse LLM output as JSON for section '%s': %s",
+                section.header, raw
+            )
+            return None
+
+    def __call__(self, sections):
+        data=[]
+        for section in sections:
+            result = self._extract(section.section_class, section)
+            data.append(result)
+        return data
 
 
-class ExtractSections:
-    def __init__(self, model, tokenizer):
-        """
-        init for the class this takes a full AutoModelForCausalLM model and a tokenizer, if you are using quantization (you should)
-        do this outside the model and then pass it to the class
-        """
-        self.model = model
-        self.tokenizer = tokenizer
-        self.device="cuda" if torch.cuda.is_available() else "cpu"
+class SectionClassifier:
+    def __init__(self, llm, sampling_params):
+        self.llm = llm
+        self.sampling_params = sampling_params
 
-    def identify_section(self, cv:CV, max_include):
-        """
-        this takes the sections identified via parsed sections and returns a label for all the sections
-        for extra robustness we are also inclund max_include tokens from the section body. This improves things quite a bit
+    def _top_lines(self, text, n=20):
+        """Return the first n non-empty lines of text."""
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        return lines[:n]
 
-        returns the same cv but there is a new key in the sections that shows what kind of section it is
-        """
-        for header, content in cv.sections.items():
-            to_include = max_include if len(content) > max_include else len(content)
-            if len(content) > 0:
-                chunk_content = "\n".join(content[:to_include])
-            else:
-                chunk_content = ""
-            prompt = classifiction_prompt.format(header=header, chunk_content=chunk_content)
+    def _prompt(self, header: str | None, text: str) -> str:
+        header = header or ""
+        return f"""Classify this CV section into exactly one of the allowed categories.
 
-            messages = [
-                {"role": "system",
-                 "content": "You are an expert assistant, you goal is to provided structued information from unstructured CV chunks. For a given chunk below indentify the section that it belongs to"},
-                {"role": "user", "content": prompt},
-            ]
+    Use the section heading and the supplied text. Choose the category that
+    best describes the actual content of the section.
 
-            input_ids = self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=True,
-                add_generation_prompt=True,
-                return_tensors="pt",
-            ).to(self.model.device)
+    Do not infer information that is not present.
+    Return only the category name.
 
-            with torch.inference_mode():
-                output = self.model.generate(**input_ids, max_new_tokens=15, eos_token_id=self.tokenizer.eos_token_id,
-                                        do_sample=False)
-            gen_ids = output[0][input_ids["input_ids"].shape[-1]:]
-            decoded = self.tokenizer.decode(gen_ids, skip_special_tokens=True)
+    Allowed categories:
+    contact_information
+    education
+    employment
+    award
+    publication
+    presentation
+    funding
+    teaching
+    supervision
+    peer_review
+    association
+    administration
+    intellectual_property
+    creative
+    media
+    profile
 
-            cv.sections[header]["section_type"]=decoded
-        return cv
+    Section heading:
+    {header}
 
-    def extract_section_info(self, section_type:str, section_content:list[str], prompt_dict):
-        """
-        for a given section and an accompanying prompt from the prompt dict create a structured output, I am not relying
-        on returning a proper json, I have given up on that but I will try to parse it later after the model runs with a whole
-        bunch of fallbacks see below.
-        """
-        prompt=prompt_dict[section_type]
+    Section text:
+    {text}
+    """
 
-        chunk = "\n".join(section_content)
-        max_tokens = self._estimate_tokens(chunk) * 5  # we are returning all the information *and* json structure
+    # def _merge_sections(self, sections):
+    #     """Merge sections with the same section_class into a single section."""
+    #     types=list(set([section.section_class for section in sections]))
+    #     same_sections={}
+    #     for type in types:
+    #         same_sections[type]=[]
+    #
+    #     for section in sections:
+    #         type=section.section_clas
+    #         same_sections[type].append(section)
+    #
+    #     for type, sections in same_sections.items():
 
-        messages = [
-            {"role": "system", "content": sys_extraction_prompt},
-            {"role": "user", "content": f"{prompt} \n {extraction_prompts["rules"]} {chunk}"},
+
+
+    def __call__(self, sections):
+        sections = list(sections)
+        if not sections:
+            return []
+
+        headers = [s.header for s in sections]
+        texts = [self._top_lines(s.text) for s in sections]
+
+        # Batched chat conversations — llm.chat applies the model's chat template
+        # per-conversation, which llm.generate does NOT do.
+        conversations = [
+            [{"role": "user", "content": self._prompt(header, text)}]
+            for header, text in zip(headers, texts)
         ]
-        input_ids = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_tensors="pt",
-        ).to(self.model.device)
 
-        with torch.inference_mode():
-            output = self.model.generate(**input_ids, max_new_tokens=max_tokens * 5, eos_token_id=self.tokenizer.eos_token_id,
-                                    do_sample=False)
-        gen_ids = output[0][input_ids["input_ids"].shape[-1]:]
-        decoded = self.tokenizer.decode(gen_ids, skip_special_tokens=True)
-        return decoded
+        outputs = self.llm.chat(
+            conversations,
+            sampling_params=self.sampling_params,
+            use_tqdm=False,
+        )
 
-    def to_json(self, decoded):
-        """this is not done yet, this is the part I need help, you can test this with a few different models and may be
-        ask a smaller second model to convert it to proper json"""
-        pass
-
-
-    def _estimate_tokens(self, chunk):
-        """
-        estimate the number of tokens we will need to return to save on processing time, this takes the section that
-        is being processed
-        """
-
-        chunk = chunk.replace("\n", " ")
-        length = len(chunk.split(" "))
-        return length
-
-
-class CV_Parser:
-    def __init__(self, file):
-        if not file.endswith(".pdf"):
-            raise NotImplementedError("Only pdfs are supported currently")
-        else:
-            self.file = file
-
-    def read_file(self):
-        """
-        take a pdf and get all the text and font information from it. This will be used to determine what's a header and what is
-        not.
-        It will return a list of lines (a line in the file) and metadata like page average font size etc.
-        """
-        if not os.path.exists(self.file):
-            raise FileNotFoundError(f"File not found: {self.file}")
-
-        structured_lines = []
-
-        LINE_MERGE_TOL = 3  # same visual line
-        BLANK_LINE_GAP = 12  # vertical gap => blank line
-
-        with pdfplumber.open(self.file) as pdf:
-            for page in pdf.pages:
-                words = page.extract_words(
-                    extra_attrs=["fontname", "size", "page_number", "top"]
+        results: list[SectionClassification | None] = []
+        for out in outputs:
+            raw = out.outputs[0].text
+            try:
+                results.append(SectionClassification.model_validate_json(raw))
+            except ValueError:
+                logger.warning(
+                    "Failed to parse LLM output as JSON: %s", raw
                 )
+                results.append(None)
 
-                if not words:
-                    structured_lines.append({
-                        "text": "",
-                        "size": None,
-                        "is_bold": False,
-                        "starting_page": page.page_number,
-                    })
-                    continue
-
-                lines = []
-                current_line = [words[0]]
-
-                for w in words[1:]:
-                    prev = current_line[-1]
-
-                    if abs(w["top"] - prev["top"]) < LINE_MERGE_TOL:
-                        current_line.append(w)
-                    else:
-                        lines.append(current_line)
-
-                        # infer blank line from vertical gap
-                        if (w["top"] - prev["top"]) > BLANK_LINE_GAP:
-                            lines.append(None)  # represents blank line
-
-                        current_line = [w]
-
-                lines.append(current_line)
-
-                for line in lines:
-                    if line is None:
-                        structured_lines.append({
-                            "text": "",
-                            "size": None,
-                            "is_bold": False,
-                            "starting_page": page.page_number,
-                        })
-                        continue
-
-                    text = " ".join(w["text"] for w in line)
-                    avg_size = sum(w["size"] for w in line) / len(line)
-                    is_bold = any("bold" in w["fontname"].lower() for w in line)
-                    page_number = min(w["page_number"] for w in line)
-
-                    structured_lines.append({
-                        "text": text,
-                        "size": round(avg_size),
-                        "is_bold": is_bold,
-                        "starting_page": page_number,
-                    })
-
-        return structured_lines
-
-    def get_fonts(self):
-        """
-        process the lines above to produce aggregate metadata about font information, this will then be used as follows
-        1. Most abundant font size is the body text
-        2. largest and smallest ones are removed because they are massive Curriculum Vitae and the confidential stuff at the bottom
-        3. The remaining largest is a header (these are I'm hoping are the main sections)
-        4. Everything else is a subheader
-
-        returns a dictionary of headers and subheaders as the key and the rest of the text as a value, these will be used to
-        a. identify sections
-        b. once identified return structured parsed information.
-        """
-        if not self.structured_lines:
-            raise ValueError("You need to run read_file() first")
-        font_sizes = [item["size"] for item in self.structured_lines if item["size"] is not None]
-        to_rem = [min(font_sizes),
-                  max(font_sizes)]  # min contains the header and the footer and the max just says Curriculum Vitae
-        font_sizes = list(set([item for item in font_sizes if item not in to_rem]))
-        size_dict = {}
-        for size in font_sizes:
-            size_dict[size] = 0
-
-        for line in self.structured_lines:
-            if line["size"] not in font_sizes:
-                continue
-            else:
-                size_dict[line["size"]] = size_dict[line["size"]] + 1
-
-        header_val = max(size_dict)
-        text_val = max(size_dict, key=size_dict.get)
-        subheaders = [k for k in size_dict if k != header_val and k != text_val]
-        font_sizes = {text_val: "text",
-                      header_val: "header"}
-        for item in subheaders:
-            font_sizes[item] = "sub_header"
-        return font_sizes
-
-    def get_cleaned_lines(self, raw_lines, fonts):
-        return [item for item in raw_lines if item["size"] in list(fonts.keys())]
-
-    def get_sections(self, cleaned_lines, fonts):
-        sections = {}
-        # State tracking
-        current_headers = {
-            "header": None,
-            "sub_header": None,
-        }
-
-        for line in cleaned_lines:
-            label = fonts[line["size"]]  # Assuming "size" contains the classification label
-            content = line["text"].strip()
-
-            if label == "header":
-                current_headers["header"] = content
-                current_headers["sub_header"] = None
-
-            elif label == "sub_header":
-                current_headers["sub_header"] = content
-
-            elif label == "text":
-                # Build the key dynamically based on what headers are currently active
-                key_parts = [
-                    current_headers["header"],
-                    current_headers["sub_header"]
-                ]
-
-                # Filter out None values and join
-                full_key = "|".join([part for part in key_parts if part is not None])
-
-                # Initialize list if key doesn't exist, then append text
-                if full_key not in sections:
-                    sections[full_key] = []
-                sections[full_key].append(content)
+        for section, result in zip(sections, results):
+            section.section_class=result
 
         return sections
 
+@dataclass
+class _VisionPlaceholder:
+    """Marks a spot in a page's event stream where a vision-labeled crop
+    needs to be swapped in for its (deferred) VLM output."""
+    batch_index: int
+    raw_item_content: str  # kept only for debugging/fallback
 
+@dataclass
+class CVSection:
+    header:str
+    text:str
+    section_class:Optional[CVSectionType]= None
 
+class CVParser:
+    def __init__(
+        self,
+        device: str | None = None,
+        page_det_limit_side_len: int = 1536,
+        crop_det_limit_side_len: int = 960,
+        vision_batch_size: int = 8,
+    ):
+        """
+        Args:
+            device: e.g. "gpu:0" or "cpu". If None, auto-detects the same
+                way the original code did. Passed to BOTH pipelines.
+            page_det_limit_side_len: max side length for full-page text
+                detection. Tune based on your smallest reliably-readable
+                font size, not upward by default.
+            crop_det_limit_side_len: max side length for the VLM pass on
+                individual vision-labeled crops. Crops are smaller than
+                full pages, so this should generally be smaller than
+                page_det_limit_side_len, not equal to it.
+            vision_batch_size: how many vision crops to send to
+                vl_pipeline.predict() per batched call. Bounds VRAM use
+                while still amortizing per-call overhead. Tune down if
+                you see OOM, up if GPU utilization looks low.
+        """
+        self.page_det_limit_side_len = page_det_limit_side_len
+        self.crop_det_limit_side_len = crop_det_limit_side_len
+        self.vision_batch_size = vision_batch_size
 
+        self.ocr_pipeline = PPStructureV3(
+            engine="transformers",
+            lang="en",
+            use_table_recognition=False,
+            use_formula_recognition=False,
+            use_chart_recognition=False,
+            use_seal_recognition=False,
+            device="gpu",  # FIX: was hardcoded "gpu"; now honors
+                                   # the resolved/passed-in device.
+            use_doc_unwarping=False,
+        )
+        self.vl_pipeline = PaddleOCRVL(
+            engine="transformers",
+            use_doc_unwarping=False,
+            use_chart_recognition=False,
+            use_seal_recognition=False,
+            format_block_content=True,
+            use_doc_orientation_classify=False,
+            device="gpu",  # FIX: was hardcoded "gpu"; now matches
+                                   # ocr_pipeline's placement. Verify this
+                                   # kwarg is honored in your installed
+                                   # PaddleOCRVL version — see caveats below.
+        )
+
+    def _predict(self, file):
+        if not os.path.exists(file):
+            raise FileNotFoundError(f"File not found: {file}")
+        return self.ocr_pipeline.predict(
+            input=file,
+            text_det_limit_side_len=self.page_det_limit_side_len,
+            text_det_limit_type="max",
+        )
+
+    def _build_events(self, output):
+        """Pass 1: walk every page in original order, deferring vision
+        crops instead of resolving them immediately. Returns:
+            page_events: list[list[event]] — one event list per page
+            pending_crops: list[np.ndarray] — crops awaiting VLM inference,
+                in the same order their placeholders were created
+        """
+        page_events = []
+        pending_crops = []
+
+        for i in range(len(output)):
+            page = output[i]
+            events = []
+            for item in page["parsing_res_list"]:
+                label = item.order_label
+                if label == "vision":
+                    arr = np.asarray(item.image["img"])
+                    placeholder = _VisionPlaceholder(
+                        batch_index=len(pending_crops),
+                        raw_item_content=getattr(item, "content", ""),
+                    )
+                    pending_crops.append(arr)
+                    events.append(("vision", placeholder))
+                elif label == "paragraph_title":
+                    events.append(("header", item.content))
+                elif label == "sub_paragraph_title":
+                    events.append(("sub_header", item.content))
+                elif label == "normal_text":
+                    events.append(("text", item.content))
+                # any other label: silently skipped, same as original
+            page_events.append(events)
+
+        return page_events, pending_crops
+
+    def _run_vl_batches(self, pending_crops):
+        """Batched VLM inference over all collected crops, chunked to
+        bound VRAM. Falls back to per-item calls within a chunk if the
+        batched call fails (e.g. list input unsupported), and isolates
+        failures of individual crops so one bad image doesn't abort the
+        whole run."""
+        results = [None] * len(pending_crops)
+        bs = self.vision_batch_size
+
+        for start in range(0, len(pending_crops), bs):
+            chunk = pending_crops[start:start + bs]
+            try:
+                chunk_out = self.vl_pipeline.predict(
+                    input=chunk,
+                    text_det_limit_side_len=self.crop_det_limit_side_len,
+                    text_det_limit_type="max",
+                )
+                chunk_out = list(chunk_out)
+                if len(chunk_out) != len(chunk):
+                    raise ValueError(
+                        f"Batched VLM call returned {len(chunk_out)} "
+                        f"results for {len(chunk)} inputs."
+                    )
+                for offset, res in enumerate(chunk_out):
+                    results[start + offset] = res
+            except Exception as e:
+                logger.warning(
+                    "Batched vl_pipeline.predict() failed for chunk "
+                    "%d-%d (%s); falling back to per-item calls.",
+                    start, start + len(chunk), e,
+                )
+                for offset, arr in enumerate(chunk):
+                    # FIX: previously unguarded — a single bad crop would
+                    # raise here and abort the entire (potentially
+                    # >100-page) run. Now isolated per item, consistent
+                    # with the "skip rather than fabricate" handling in
+                    # _replay_events.
+                    try:
+                        single_out = self.vl_pipeline.predict(
+                            input=arr,
+                            text_det_limit_side_len=self.crop_det_limit_side_len,
+                            text_det_limit_type="max",
+                        )
+                        results[start + offset] = list(single_out)[0]
+                    except Exception as item_e:
+                        logger.warning(
+                            "Per-item vl_pipeline.predict() failed for "
+                            "crop %d (%s); skipping.",
+                            start + offset, item_e,
+                        )
+                        results[start + offset] = None
+
+        return results
+
+    def _replay_events(self, page_events, vl_results):
+        """Pass 2: replay events in original order, resolving vision
+        placeholders with real VLM output, and rebuild `sections` with
+        the same header-tracking semantics as the original code."""
+        sections = []
+        # FIX: previously reinitialized inside the `for events in
+        # page_events` loop, so header/sub_header silently reset to None
+        # at every page boundary. A section (e.g. a multi-page
+        # Publications list) whose header only appears on its first page
+        # would then produce headerless/empty-keyed chunks for every
+        # subsequent page. Now persists across the whole document.
+        current_headers = {"header": None, "sub_header": None}
+
+        for events in page_events:
+            for kind, payload in events:
+                if kind == "header":
+                    current_headers["header"] = payload
+                elif kind == "sub_header":
+                    current_headers["sub_header"] = payload
+                elif kind == "text":
+                    key_parts = [current_headers["header"], current_headers["sub_header"]]
+                    full_key = "|".join(p for p in key_parts if p is not None)
+                    sections.append((full_key, payload))
+                elif kind == "vision":
+                    vision_output = vl_results[payload.batch_index]
+                    if vision_output is None:
+                        logger.warning(
+                            "No VLM output for a vision crop; skipping."
+                        )
+                        continue
+                    for sub_item in vision_output["parsing_res_list"]:
+                        sub_label = sub_item.label
+                        if sub_label == "paragraph_title":
+                            current_headers["header"] = sub_item.content
+                        elif sub_label == "sub_paragraph_title":
+                            # Verify this label actually appears in your
+                            # crop outputs — remove if it doesn't.
+                            current_headers["sub_header"] = sub_item.content
+                        elif sub_label in ("text", "table", "reference_content"):
+                            key_parts = [current_headers["header"], current_headers["sub_header"]]
+                            full_key = "|".join(p for p in key_parts if p is not None)
+                            sections.append((full_key, sub_item.content))
+
+        section_classes=[]
+        for section in sections:
+            s=CVSection(header=section[0], text=section[1])
+            section_classes.append(s)
+
+        return section_classes
+
+    def _sections(self, output):
+        page_events, pending_crops = self._build_events(output)
+        vl_results = self._run_vl_batches(pending_crops) if pending_crops else []
+        return self._replay_events(page_events, vl_results)
+
+    def __call__(self, file):
+        pipeline_out = self._predict(file)
+        return self._sections(pipeline_out)
