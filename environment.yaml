@@ -19,3 +19,4 @@ dependencies:
       - outlines
       - accelerate
       - bitsandbytes
+      - vllm

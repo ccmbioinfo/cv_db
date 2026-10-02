@@ -1,7 +1,6 @@
 import os
 import logging
-from typing import Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 from paddleocr import PPStructureV3, PaddleOCRVL
@@ -10,138 +9,6 @@ from cv_db.parser.models import *
 
 logger = logging.getLogger(__name__)
 
-class SectionExtractor:
-    def __init__(self, llm, sampling_params):
-        self.llm = llm
-        self.sampling_params = sampling_params
-
-    def _get_model(self, section_class):
-        model=EXTRACTION_MODELS[section_class]
-        return model
-
-    def _extract(self, section_class, section):
-        model = self._get_model(section_class)
-        prompt = model.get_prompt(section.header, section.text)
-        conversation = [{"role": "user", "content": prompt}]
-        output = self.llm.chat(
-            [conversation],
-            sampling_params=self.sampling_params,
-            use_tqdm=False,
-        )
-        raw = output[0].outputs[0].text
-        try:
-            return model.model_validate_json(raw)
-        except ValueError:
-            logger.warning(
-                "Failed to parse LLM output as JSON for section '%s': %s",
-                section.header, raw
-            )
-            return None
-
-    def __call__(self, sections):
-        data=[]
-        for section in sections:
-            result = self._extract(section.section_class, section)
-            data.append(result)
-        return data
-
-
-class SectionClassifier:
-    def __init__(self, llm, sampling_params):
-        self.llm = llm
-        self.sampling_params = sampling_params
-
-    def _top_lines(self, text, n=20):
-        """Return the first n non-empty lines of text."""
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        return lines[:n]
-
-    def _prompt(self, header: str | None, text: str) -> str:
-        header = header or ""
-        return f"""Classify this CV section into exactly one of the allowed categories.
-
-    Use the section heading and the supplied text. Choose the category that
-    best describes the actual content of the section.
-
-    Do not infer information that is not present.
-    Return only the category name.
-
-    Allowed categories:
-    contact_information
-    education
-    employment
-    award
-    publication
-    presentation
-    funding
-    teaching
-    supervision
-    peer_review
-    association
-    administration
-    intellectual_property
-    creative
-    media
-    profile
-
-    Section heading:
-    {header}
-
-    Section text:
-    {text}
-    """
-
-    # def _merge_sections(self, sections):
-    #     """Merge sections with the same section_class into a single section."""
-    #     types=list(set([section.section_class for section in sections]))
-    #     same_sections={}
-    #     for type in types:
-    #         same_sections[type]=[]
-    #
-    #     for section in sections:
-    #         type=section.section_clas
-    #         same_sections[type].append(section)
-    #
-    #     for type, sections in same_sections.items():
-
-
-
-    def __call__(self, sections):
-        sections = list(sections)
-        if not sections:
-            return []
-
-        headers = [s.header for s in sections]
-        texts = [self._top_lines(s.text) for s in sections]
-
-        # Batched chat conversations — llm.chat applies the model's chat template
-        # per-conversation, which llm.generate does NOT do.
-        conversations = [
-            [{"role": "user", "content": self._prompt(header, text)}]
-            for header, text in zip(headers, texts)
-        ]
-
-        outputs = self.llm.chat(
-            conversations,
-            sampling_params=self.sampling_params,
-            use_tqdm=False,
-        )
-
-        results: list[SectionClassification | None] = []
-        for out in outputs:
-            raw = out.outputs[0].text
-            try:
-                results.append(SectionClassification.model_validate_json(raw))
-            except ValueError:
-                logger.warning(
-                    "Failed to parse LLM output as JSON: %s", raw
-                )
-                results.append(None)
-
-        for section, result in zip(sections, results):
-            section.section_class=result
-
-        return sections
 
 @dataclass
 class _VisionPlaceholder:
@@ -150,16 +17,10 @@ class _VisionPlaceholder:
     batch_index: int
     raw_item_content: str  # kept only for debugging/fallback
 
-@dataclass
-class CVSection:
-    header:str
-    text:str
-    section_class:Optional[CVSectionType]= None
 
 class CVParser:
     def __init__(
         self,
-        device: str | None = None,
         page_det_limit_side_len: int = 1536,
         crop_det_limit_side_len: int = 960,
         vision_batch_size: int = 8,
@@ -180,6 +41,7 @@ class CVParser:
                 while still amortizing per-call overhead. Tune down if
                 you see OOM, up if GPU utilization looks low.
         """
+
         self.page_det_limit_side_len = page_det_limit_side_len
         self.crop_det_limit_side_len = crop_det_limit_side_len
         self.vision_batch_size = vision_batch_size
@@ -246,7 +108,19 @@ class CVParser:
                     events.append(("sub_header", item.content))
                 elif label == "normal_text":
                     events.append(("text", item.content))
-                # any other label: silently skipped, same as original
+                elif label == "table":
+                    # FIX: previously dropped silently, same as the
+                    # original code. Top-level tables (not nested inside
+                    # a vision crop) can carry Employment/Funding-style
+                    # tabular content — surface them instead of losing
+                    # them. Confirm "table" is actually the order_label
+                    # your PPStructureV3 output uses for this content;
+                    # adjust the label string if it differs.
+                    events.append(("text", item.content))
+                else:
+                    logger.debug(
+                        "Skipping unhandled top-level order_label: %r", label
+                    )
             page_events.append(events)
 
         return page_events, pending_crops
@@ -348,12 +222,7 @@ class CVParser:
                             full_key = "|".join(p for p in key_parts if p is not None)
                             sections.append((full_key, sub_item.content))
 
-        section_classes=[]
-        for section in sections:
-            s=CVSection(header=section[0], text=section[1])
-            section_classes.append(s)
-
-        return section_classes
+        return sections
 
     def _sections(self, output):
         page_events, pending_crops = self._build_events(output)
@@ -363,3 +232,6 @@ class CVParser:
     def __call__(self, file):
         pipeline_out = self._predict(file)
         return self._sections(pipeline_out)
+
+
+
